@@ -20,25 +20,32 @@ import Input from '@/components/input';
 import Button from '@/components/button';
 import { Colors } from '@/constants/colors';
 
-export default function Login() {
-  const { signIn, isLoading, error, clearError } = useAuthContext();
+export default function Register() {
+  const { signUp, isLoading, error, clearError } = useAuthContext();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  async function handleLogin() {
+  async function handleRegister() {
     if (!username.trim() || !password.trim()) {
       Alert.alert('Erro', 'Preencha usuário e senha');
       return;
     }
 
+    if (password !== confirmPassword) {
+      Alert.alert('Erro', 'As senhas não conferem');
+      return;
+    }
+
     clearError();
-    const success = await signIn(username.trim(), password);
+    const success = await signUp(username.trim(), password);
 
     if (success) {
       router.replace('/pokedex');
     } else {
-      const message = error ? getUserFriendlyMessage(error) : 'Usuário ou senha incorretos';
+      const message = error ? getUserFriendlyMessage(error) : 'Falha ao criar conta';
       Alert.alert('Erro', message);
     }
   }
@@ -57,12 +64,12 @@ export default function Login() {
             style={styles.logo}
           />
           <Text style={styles.title}>PokéDex</Text>
-          <Text style={styles.subtitle}>Faça login para iniciar sua jornada</Text>
+          <Text style={styles.subtitle}>Crie sua conta e comece sua jornada</Text>
         </View>
 
         <Card>
-          <Text style={styles.cardTitle}>Acesse sua conta</Text>
-          <Text style={styles.cardSubtitle}>Entre para continuar sua jornada.</Text>
+          <Text style={styles.cardTitle}>Criar conta</Text>
+          <Text style={styles.cardSubtitle}>Registre seu treinador para começar.</Text>
 
           <Input
             value={username}
@@ -97,17 +104,41 @@ export default function Login() {
             </TouchableOpacity>
           </View>
 
+          <View style={styles.passwordContainer}>
+            <Input
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              placeholder="Confirmar senha"
+              placeholderTextColor={Colors.gray[500]}
+              secureTextEntry={!showConfirmPassword}
+              editable={!isLoading}
+              style={styles.passwordInput}
+            />
+            <TouchableOpacity
+              style={styles.eyeButton}
+              onPress={() => setShowConfirmPassword((prev) => !prev)}
+              disabled={isLoading}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'}
+                size={20}
+                color={Colors.gray[500]}
+              />
+            </TouchableOpacity>
+          </View>
+
           <Button
-            title={isLoading ? 'Entrando...' : 'Entrar'}
-            onPress={() => void handleLogin()}
+            title={isLoading ? 'Criando conta...' : 'Registrar'}
+            onPress={() => void handleRegister()}
             disabled={isLoading}
             style={styles.button}
           />
 
           <Button
-            title="Criar nova conta"
+            title="Já tenho conta"
             variant="surface"
-            onPress={() => router.push('/register')}
+            onPress={() => router.back()}
             disabled={isLoading}
             style={styles.button}
           />

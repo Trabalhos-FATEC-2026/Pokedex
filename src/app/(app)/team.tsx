@@ -43,9 +43,7 @@ export default function MyTeam() {
     cardWidth = Math.floor((containerWidth - gap) / 2);
   }
 
-  const getCardStyle = () => {
-    return { width: cardWidth };
-  };
+  const getCardStyle = () => ({ width: cardWidth });
 
   const {
     team,
@@ -57,17 +55,10 @@ export default function MyTeam() {
     promoteReserve,
   } = useTeam();
 
-  const [isModalVisible, setIsModalVisible] = useState(false);
-  const [modalMode, setModalMode] = useState<'promote' | 'demote' | null>(null);
-  const [activePokemon, setActivePokemon] = useState<Pokemon | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-
-  useEffect(() => {
-    if (__DEV__) {
-      console.log('[TEAM SCREEN] team.length:', team.length);
-      console.log('[TEAM SCREEN] reserves.length:', reserves.length);
-    }
-  }, [team, reserves]);
+  // Modal de substituição de titular
+  const [swapModal, setSwapModal] = useState<{ starterPokemon: Pokemon } | null>(null);
+  const [swapSearch, setSwapSearch] = useState('');
+  const [isSwapping, setIsSwapping] = useState(false);
 
   useEffect(() => {
     if (user?.userId) {
@@ -75,66 +66,43 @@ export default function MyTeam() {
     }
   }, [refreshTeam, user?.userId]);
 
-  async function handleReleasePokemon(pokemonId: number) {
-    if (__DEV__) console.log('[TEAM SCREEN] handleReleasePokemon:', pokemonId);
+  async function handleReleasePokemon(pokemonId: number, name: string) {
+    Alert.alert(
+      'Liberar Pokémon',
+      `Tem certeza que deseja liberar ${name}? Esta ação não pode ser desfeita.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Liberar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await removeCapturedPokemon(pokemonId);
+            } catch (err) {
+              Alert.alert('Erro', getUserFriendlyMessage(err as any));
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  async function handleSwapConfirm(reserveId: number) {
+    if (!swapModal) return;
+    setIsSwapping(true);
     try {
-      await removeCapturedPokemon(pokemonId);
+      await promoteReserve(swapModal.starterPokemon.id, reserveId);
+      setSwapModal(null);
+      setSwapSearch('');
     } catch (err) {
-      const friendlyMessage = getUserFriendlyMessage(err as any);
-      Alert.alert('Erro', friendlyMessage);
+      Alert.alert('Erro ao substituir', getUserFriendlyMessage(err as any));
+    } finally {
+      setIsSwapping(false);
     }
   }
 
-  function handlePromotePress(reserve: Pokemon) {
-    if (__DEV__) console.log('[TEAM SCREEN] handlePromotePress for reserve:', reserve.nome);
-    if (team.length === 0) {
-      Alert.alert(
-        'Não há titulares',
-        'Você não possui nenhum Pokémon titular ativo para substituir. Capture um novo Pokémon na Pokédex para preencher o time titular!'
-      );
-      return;
-    }
-    setActivePokemon(reserve);
-    setModalMode('promote');
-    setSearchQuery('');
-    setIsModalVisible(true);
-  }
-
-  function handleDemotePress(starter: Pokemon) {
-    if (__DEV__) console.log('[TEAM SCREEN] handleDemotePress for starter:', starter.nome);
-    if (reserves.length === 0) {
-      Alert.alert(
-        'Sem reservas',
-        'Você não possui Pokémon no banco de reservas para substituir. Capture mais Pokémon na Pokédex!'
-      );
-      return;
-    }
-    setActivePokemon(starter);
-    setModalMode('demote');
-    setSearchQuery('');
-    setIsModalVisible(true);
-  }
-
-  async function handleSwap(starterId: number, reserveId: number) {
-    if (__DEV__) {
-      console.log('[TEAM SCREEN] handleSwap triggered with starterId:', starterId, 'reserveId:', reserveId);
-    }
-    setIsModalVisible(false);
-    setSearchQuery('');
-    try {
-      await promoteReserve(starterId, reserveId);
-      if (__DEV__) console.log('[TEAM SCREEN] promoteReserve completed successfully');
-    } catch (err: any) {
-      console.error('[TEAM SCREEN] promoteReserve error:', err);
-      const friendlyMessage = getUserFriendlyMessage(err);
-      const detail = err.message || JSON.stringify(err);
-      Alert.alert('Erro na substituição', `${friendlyMessage}\n\nDetalhes: ${detail}`);
-    }
-  }
-
-  const candidates = modalMode === 'promote' ? team : (modalMode === 'demote' ? reserves : []);
-  const filteredCandidates = candidates.filter((p) =>
-    p.nome.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredReserves = reserves.filter((r) =>
+    r.nome.toLowerCase().includes(swapSearch.toLowerCase())
   );
 
   return (
@@ -159,7 +127,7 @@ export default function MyTeam() {
         ) : (
           <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}>
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Time Titular ({team.length}/6)</Text>
+              <Text style={styles.sectionTitle}>Time Titular ({team.length}/5)</Text>
               <Text style={styles.sectionSubtitle}>Os Pokémons ativos do seu time principal</Text>
             </View>
 
@@ -197,15 +165,13 @@ export default function MyTeam() {
                     <View style={styles.actionsColumn}>
                       <Button
                         title="Substituir"
-                        variant="primary"
-                        onPress={() => handleDemotePress(item)}
+                        variant="surface"
+                        onPress={() => {
+                          setSwapSearch('');
+                          setSwapModal({ starterPokemon: item });
+                        }}
                         style={styles.actionButton}
-                      />
-                      <Button
-                        title="Liberar"
-                        variant="danger"
-                        onPress={() => void handleReleasePokemon(item.id)}
-                        style={styles.actionButton}
+                        disabled={reserves.length === 0}
                       />
                     </View>
                   </Card>
@@ -249,15 +215,9 @@ export default function MyTeam() {
                     </View>
                     <View style={styles.actionsColumn}>
                       <Button
-                        title="Promover"
-                        variant="primary"
-                        onPress={() => handlePromotePress(item)}
-                        style={styles.actionButton}
-                      />
-                      <Button
                         title="Liberar"
                         variant="danger"
-                        onPress={() => void handleReleasePokemon(item.id)}
+                        onPress={() => void handleReleasePokemon(item.id, item.nome)}
                         style={styles.actionButton}
                       />
                     </View>
@@ -269,103 +229,82 @@ export default function MyTeam() {
         )}
       </View>
 
-      {isModalVisible && (
-        <View style={styles.absoluteModalContainer}>
-          <Pressable style={styles.modalOverlay} onPress={() => setIsModalVisible(false)}>
-            <View 
-              style={styles.modalContent}
-              onTouchStart={(e) => e.stopPropagation()}
-            >
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>
-                  {modalMode === 'promote'
-                    ? 'Substituir por qual Titular?'
-                    : 'Substituir por qual Reserva?'}
-                </Text>
-                <Pressable
-                  onPress={() => setIsModalVisible(false)}
-                  style={({ pressed }) => [styles.closeModalButton, pressed && { opacity: 0.6 }]}
-                >
-                  <Ionicons name="close" size={24} color={Colors.txtPrimary} />
-                </Pressable>
-              </View>
-
-              <TextInput
-                style={styles.searchInput}
-                placeholder="Buscar Pokémon..."
-                placeholderTextColor={Colors.gray[500]}
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-              />
-
-              {filteredCandidates.length === 0 ? (
-                <View style={styles.modalEmptyContainer}>
-                  <Ionicons name="search-outline" size={48} color={Colors.gray[500]} />
-                  <Text style={styles.modalEmptyText}>Nenhum Pokémon encontrado</Text>
+      {/* Modal: Substituir titular por reserva */}
+      {swapModal && (
+        <Modal
+          visible
+          transparent
+          animationType="slide"
+          onRequestClose={() => setSwapModal(null)}
+        >
+          <View style={styles.absoluteModalContainer}>
+            <Pressable style={styles.modalOverlay} onPress={() => setSwapModal(null)}>
+              <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>
+                    Substituir {swapModal.starterPokemon.nome}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.closeModalButton}
+                    onPress={() => setSwapModal(null)}
+                  >
+                    <Ionicons name="close" size={24} color={Colors.txtPrimary} />
+                  </TouchableOpacity>
                 </View>
-              ) : (
-                <ScrollView
-                  style={styles.modalList}
-                  showsVerticalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
-                >
-                  {filteredCandidates.map((candidate) => (
-                    <Pressable
-                      key={candidate.id}
-                      style={({ pressed }) => [
-                        styles.modalItem,
-                        pressed && { opacity: 0.7, backgroundColor: Colors.surfaceDeep },
-                      ]}
-                      onPress={() => {
-                        if (__DEV__) {
-                          console.log('[TEAM SCREEN] Clicked on modal item candidate:', candidate.nome, 'id:', candidate.id);
-                          console.log('[TEAM SCREEN] current activePokemon:', activePokemon?.nome, 'id:', activePokemon?.id);
-                          console.log('[TEAM SCREEN] current modalMode:', modalMode);
-                        }
-                        if (activePokemon) {
-                          const starterId = Number(modalMode === 'promote' ? candidate.id : activePokemon.id);
-                          const reserveId = Number(modalMode === 'promote' ? activePokemon.id : candidate.id);
-                          void handleSwap(starterId, reserveId);
-                        } else {
-                          if (__DEV__) console.warn('activePokemon is null');
-                        }
-                      }}
-                    >
-                      <Image source={{ uri: candidate.imagem }} style={styles.modalItemImage} />
-                      <View style={styles.modalItemInfo}>
-                        <Text style={styles.modalItemName}>{candidate.nome}</Text>
-                        <View style={styles.typesContainer}>
-                          {candidate.tipos.map((type) => {
-                            const tColor = pokemonTypeColors[type.toLowerCase()] || '#A8A878';
-                            return (
-                              <View
-                                key={type}
-                                style={[
-                                  styles.typeBadge,
-                                  { backgroundColor: tColor, borderColor: tColor },
-                                ]}
-                              >
-                                <Text style={[styles.typeText, { color: '#FFF' }]}>{type}</Text>
-                              </View>
-                            );
-                          })}
-                        </View>
-                      </View>
-                      <Ionicons name="swap-horizontal" size={20} color={Colors.btnPrimary} />
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              )}
 
-              <Button
-                title="Cancelar"
-                variant="surface"
-                onPress={() => setIsModalVisible(false)}
-                style={styles.cancelButton}
-              />
-            </View>
-          </Pressable>
-        </View>
+                <Text style={styles.modalSubtitle}>
+                  Escolha qual reserva irá substituir este titular
+                </Text>
+
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Buscar reserva..."
+                  placeholderTextColor={Colors.gray[500]}
+                  value={swapSearch}
+                  onChangeText={setSwapSearch}
+                />
+
+                <ScrollView style={styles.modalList} showsVerticalScrollIndicator={false}>
+                  {filteredReserves.length === 0 ? (
+                    <Text style={styles.emptySectionText}>Nenhuma reserva disponível.</Text>
+                  ) : (
+                    filteredReserves.map((reserve) => (
+                      <TouchableOpacity
+                        key={reserve.id}
+                        style={styles.modalItem}
+                        onPress={() => void handleSwapConfirm(reserve.id)}
+                        disabled={isSwapping}
+                      >
+                        <Image source={{ uri: reserve.imagem }} style={styles.modalItemImage} />
+                        <View style={styles.modalItemInfo}>
+                          <Text style={styles.name}>{reserve.nome}</Text>
+                          <View style={styles.typesContainer}>
+                            {reserve.tipos.map((type) => {
+                              const tColor = pokemonTypeColors[type.toLowerCase()] || '#A8A878';
+                              return (
+                                <View
+                                  key={type}
+                                  style={[styles.typeBadge, { backgroundColor: tColor, borderColor: tColor }]}
+                                >
+                                  <Text style={[styles.typeText, { color: '#FFF' }]}>{type}</Text>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        </View>
+                        {isSwapping ? (
+                          <ActivityIndicator size="small" color={Colors.btnPrimary} />
+                        ) : (
+                          <Ionicons name="swap-horizontal" size={20} color={Colors.btnPrimary} />
+                        )}
+                      </TouchableOpacity>
+                    ))
+                  )}
+                </ScrollView>
+              </Pressable>
+            </Pressable>
+          </View>
+        </Modal>
       )}
     </SafeAreaView>
   );
@@ -517,6 +456,11 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: 'bold',
     color: Colors.txtPrimary,
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    color: Colors.gray[500],
+    marginBottom: 12,
   },
   closeModalButton: {
     padding: 4,

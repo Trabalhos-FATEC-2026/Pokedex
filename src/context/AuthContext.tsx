@@ -1,11 +1,11 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
-import { AuthUser } from '@/@type/auth';
+import { AuthUser } from '@/@type/pokemon';
 import {
     login as authServiceLogin,
     register as authServiceRegister,
     logout as authServiceLogout,
     getStoredSession,
-} from '@/integration/auth';
+} from '@/integration/pokemons';
 import { ApiError, parseApiError } from '@/utils/error-handler';
 
 type AuthContextData = {

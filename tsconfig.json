@@ -6,7 +6,7 @@
       "@/*": [
         "./src/*"
       ],
-      "@types/*": ["./src/@types/*"],
+      "@type/*": ["./src/@type/*"]
     }
   },
   "include": [

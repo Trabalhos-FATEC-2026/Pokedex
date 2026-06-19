@@ -123,4 +123,24 @@ export default StyleSheet.create({
         marginTop: 0,
         height: 44,
     },
+    statusBadge: {
+        height: 44,
+        borderRadius: 12,
+        borderWidth: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    statusCaptured: {
+        backgroundColor: Colors.semantic.success.bg,
+        borderColor: Colors.semantic.success.border,
+    },
+    statusAvailable: {
+        backgroundColor: Colors.surfaceMuted,
+        borderColor: Colors.borderSoft,
+    },
+    statusText: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: Colors.txtPrimary,
+    },
 });

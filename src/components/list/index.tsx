@@ -66,13 +66,26 @@ export default function PokemonList({ pokemons, capturedIds = [], onAddPokemon }
                         </View>
 
                         <View style={styles.actionArea}>
-                            <Button
-                                title={capturedIds.includes(pokemon.id) ? 'Capturado' : 'Capturar'}
-                                variant={capturedIds.includes(pokemon.id) ? 'surface' : 'primary'}
-                                disabled={capturedIds.includes(pokemon.id)}
-                                onPress={() => onAddPokemon?.(pokemon)}
-                                style={styles.captureButton}
-                            />
+                            {onAddPokemon ? (
+                                <Button
+                                    title={capturedIds.includes(pokemon.id) ? 'Capturado' : 'Capturar'}
+                                    variant={capturedIds.includes(pokemon.id) ? 'surface' : 'primary'}
+                                    disabled={capturedIds.includes(pokemon.id)}
+                                    onPress={() => onAddPokemon?.(pokemon)}
+                                    style={styles.captureButton}
+                                />
+                            ) : (
+                                <View
+                                    style={[
+                                        styles.statusBadge,
+                                        capturedIds.includes(pokemon.id) ? styles.statusCaptured : styles.statusAvailable,
+                                    ]}
+                                >
+                                    <Text style={styles.statusText}>
+                                        {capturedIds.includes(pokemon.id) ? 'Já capturado' : 'Disponível'}
+                                    </Text>
+                                </View>
+                            )}
                         </View>
 
                     </View>

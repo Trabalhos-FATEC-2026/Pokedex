@@ -1,366 +1,432 @@
-import React, { useCallback, useMemo, useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   Image,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
-  Alert,
-  ActivityIndicator,
 } from 'react-native';
 
-import { useAuthContext } from '@/context/AuthContext';
-import { useTeam } from '@/context/TeamContext';
+import { Pokemon } from '@/@type/pokemon';
 import AppNav from '@/components/app-nav';
 import Button from '@/components/button';
+import Card from '@/components/card';
 import { Colors } from '@/constants/colors';
+import { useAuthContext } from '@/context/AuthContext';
+import { useTeam } from '@/context/TeamContext';
+import {
+  getPokemonById,
+  incrementLosses,
+  incrementWins,
+} from '@/integration/pokemons';
+import { getUserFriendlyMessage } from '@/utils/error-handler';
 import { pokemonTypeColors } from '@/utils/pokemonColors';
-import { Ionicons } from '@expo/vector-icons';
 
-const MAX_HP = 100;
+const MAX_POKEDEX_ID = 151;
+const TOTAL_ROUNDS = 5;
+const POINTS_TO_WIN = 3;
 
-type BattlePokemon = {
-  id: number;
-  name: string;
-  image: string;
-  type: string;
+const STATS_POOL = [
+  'hp',
+  'attack',
+  'defense',
+  'special-attack',
+  'special-defense',
+  'speed',
+] as const;
+
+type StatName = (typeof STATS_POOL)[number];
+type GameState = 'idle' | 'playing' | 'round_resolved' | 'finished';
+
+type RoundWinner = 'player' | 'enemy' | 'tie';
+
+const STAT_LABELS: Record<StatName, string> = {
+  hp: 'HP',
+  attack: 'Ataque',
+  defense: 'Defesa',
+  'special-attack': 'Ataque Especial',
+  'special-defense': 'Defesa Especial',
+  speed: 'Velocidade',
 };
 
-const MOCK_BATTLE_POKEMONS: BattlePokemon[] = [
-  {
-    id: 25,
-    name: 'pikachu',
-    image: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png',
-    type: 'electric',
-  },
-  {
-    id: 6,
-    name: 'charizard',
-    image: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/6.png',
-    type: 'fire',
-  },
-  {
-    id: 9,
-    name: 'blastoise',
-    image: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/9.png',
-    type: 'water',
-  },
-  {
-    id: 3,
-    name: 'venusaur',
-    image: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/3.png',
-    type: 'grass',
-  },
-  {
-    id: 94,
-    name: 'gengar',
-    image: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/94.png',
-    type: 'ghost',
-  },
-  {
-    id: 149,
-    name: 'dragonite',
-    image: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/149.png',
-    type: 'dragon',
-  },
-];
+function normalizeStatName(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, '-');
+}
 
-const RIVAL_TEAM = MOCK_BATTLE_POKEMONS;
+function getStatValue(pokemon: Pokemon, statName: StatName): number {
+  const normalized = normalizeStatName(statName);
+  const statObj = pokemon.poderes.find(
+    (stat) => normalizeStatName(stat.nome) === normalized
+  );
 
-function hpBarWidth(hp: number): `${number}%` {
-  return `${Math.max(0, Math.min(MAX_HP, hp))}%`;
+  if (!statObj || !Number.isFinite(statObj.forca)) {
+    return 50;
+  }
+
+  return statObj.forca;
+}
+
+function randomStat(): StatName {
+  return STATS_POOL[Math.floor(Math.random() * STATS_POOL.length)];
+}
+
+function randomIdExcept(excludedIds: number[]): number {
+  const excluded = new Set(excludedIds);
+  const available = Array.from({ length: MAX_POKEDEX_ID }, (_, i) => i + 1).filter(
+    (id) => !excluded.has(id)
+  );
+
+  if (available.length === 0) {
+    return Math.floor(Math.random() * MAX_POKEDEX_ID) + 1;
+  }
+
+  return available[Math.floor(Math.random() * available.length)];
 }
 
 export default function Battle() {
-  const { width } = useWindowDimensions();
-  const isWideLayout = width >= 900;
-
   const { user } = useAuthContext();
-  const { team, isLoading: isLoadingTeam, refreshTeam } = useTeam();
+  const { team, reserves, capturedIds, isLoading, error, refreshTeam, capturePokemon } = useTeam();
 
-  const [playerIndex, setPlayerIndex] = useState(0);
-  const [enemyIndex, setEnemyIndex] = useState(0);
+  const [gameState, setGameState] = useState<GameState>('idle');
+  const [isPreparingMatch, setIsPreparingMatch] = useState(false);
 
-  const [playerHp, setPlayerHp] = useState(MAX_HP);
-  const [enemyHp, setEnemyHp] = useState(MAX_HP);
-  const [message, setMessage] = useState('Batalha melhor de 6 iniciada!');
-  const [matchFinished, setMatchFinished] = useState(false);
+  const [playerTeamDetailed, setPlayerTeamDetailed] = useState<Pokemon[]>([]);
+  const [enemyTeam, setEnemyTeam] = useState<Pokemon[]>([]);
 
-  useEffect(() => {
-    if (user?.userId) {
-      void refreshTeam();
-    }
-  }, [refreshTeam, user?.userId]);
+  const [currentRound, setCurrentRound] = useState(0);
+  const [playerScore, setPlayerScore] = useState(0);
+  const [enemyScore, setEnemyScore] = useState(0);
 
-  const currentPlayer = useMemo(() => {
-    return team && team.length > 0 ? team[playerIndex] : null;
-  }, [team, playerIndex]);
+  const [playerSelectedStat, setPlayerSelectedStat] = useState<StatName | null>(null);
+  const [enemySelectedStat, setEnemySelectedStat] = useState<StatName | null>(null);
+  const [playerStatValue, setPlayerStatValue] = useState(0);
+  const [enemyStatValue, setEnemyStatValue] = useState(0);
+  const [roundWinner, setRoundWinner] = useState<RoundWinner | null>(null);
 
-  const currentEnemy = useMemo(() => {
-    return RIVAL_TEAM[enemyIndex];
-  }, [enemyIndex]);
+  const [battleMessage, setBattleMessage] = useState(
+    'Inicie uma partida para jogar 5 rounds (vence quem fizer 3 pontos).'
+  );
+  const [rewardPokemon, setRewardPokemon] = useState<Pokemon | null>(null);
 
-  const resetBattle = useCallback(() => {
-    setPlayerIndex(0);
-    setEnemyIndex(0);
-    setPlayerHp(MAX_HP);
-    setEnemyHp(MAX_HP);
-    setMatchFinished(false);
-    setMessage('Nova batalha melhor de 6 iniciada!');
-  }, []);
+  const playerPokemon = playerTeamDetailed[currentRound] ?? null;
+  const enemyPokemon = enemyTeam[currentRound] ?? null;
 
-  function attack() {
-    if (matchFinished || !currentPlayer || !currentEnemy) {
+  const canStart = team.length >= TOTAL_ROUNDS && !isPreparingMatch;
+  const scoreLabel = useMemo(() => `${playerScore} x ${enemyScore}`, [playerScore, enemyScore]);
+
+  const resolveRound = useCallback(
+    (roundIndex: number, ownTeam: Pokemon[], rivalTeam: Pokemon[]) => {
+      const ownPokemon = ownTeam[roundIndex];
+      const rivalPokemon = rivalTeam[roundIndex];
+
+      if (!ownPokemon || !rivalPokemon) {
+        return;
+      }
+
+      const ownStat = randomStat();
+      const rivalStat = randomStat();
+      const ownValue = getStatValue(ownPokemon, ownStat);
+      const rivalValue = getStatValue(rivalPokemon, rivalStat);
+
+      setPlayerSelectedStat(ownStat);
+      setEnemySelectedStat(rivalStat);
+      setPlayerStatValue(ownValue);
+      setEnemyStatValue(rivalValue);
+
+      if (ownValue > rivalValue) {
+        setPlayerScore((prev) => prev + 1);
+        setRoundWinner('player');
+        setBattleMessage(
+          `${ownPokemon.nome.toUpperCase()} venceu: ${STAT_LABELS[ownStat]} (${ownValue}) > ${STAT_LABELS[rivalStat]} (${rivalValue}).`
+        );
+      } else if (ownValue < rivalValue) {
+        setEnemyScore((prev) => prev + 1);
+        setRoundWinner('enemy');
+        setBattleMessage(
+          `${rivalPokemon.nome.toUpperCase()} venceu: ${STAT_LABELS[rivalStat]} (${rivalValue}) > ${STAT_LABELS[ownStat]} (${ownValue}).`
+        );
+      } else {
+        setRoundWinner('tie');
+        setBattleMessage(
+          `Empate no round: ${STAT_LABELS[ownStat]} (${ownValue}) = ${STAT_LABELS[rivalStat]} (${rivalValue}).`
+        );
+      }
+
+      setGameState('round_resolved');
+    },
+    []
+  );
+
+  const startMatch = useCallback(async () => {
+    if (team.length < TOTAL_ROUNDS) {
+      setBattleMessage('Voce precisa de 5 pokemons no time para iniciar a partida.');
       return;
     }
 
-    // Calcular dano base simétrico (8 a 19)
-    let damageToEnemy = Math.floor(Math.random() * 12) + 8;
-    let damageToPlayer = Math.floor(Math.random() * 12) + 8;
+    setIsPreparingMatch(true);
+    setRewardPokemon(null);
+    setCurrentRound(0);
+    setPlayerScore(0);
+    setEnemyScore(0);
+    setRoundWinner(null);
+    setPlayerSelectedStat(null);
+    setEnemySelectedStat(null);
 
-    let playerCrit = false;
-    let enemyCrit = false;
-    let playerMiss = false;
-    let enemyMiss = false;
+    try {
+      const playerIds = team.slice(0, TOTAL_ROUNDS).map((pokemon) => pokemon.id);
 
-    // 12% de chance de crítico (1.5x dano)
-    if (Math.random() < 0.12) {
-      damageToEnemy = Math.floor(damageToEnemy * 1.5);
-      playerCrit = true;
+      const [ownDetailed, rivals] = await Promise.all([
+        Promise.all(playerIds.map((id) => getPokemonById(id))),
+        Promise.all(
+          Array.from({ length: TOTAL_ROUNDS }, () => getPokemonById(randomIdExcept([])))
+        ),
+      ]);
+
+      setPlayerTeamDetailed(ownDetailed);
+      setEnemyTeam(rivals);
+      setGameState('playing');
+      resolveRound(0, ownDetailed, rivals);
+    } catch (err) {
+      Alert.alert('Erro ao iniciar partida', getUserFriendlyMessage(err as any));
+    } finally {
+      setIsPreparingMatch(false);
     }
-    if (Math.random() < 0.12) {
-      damageToPlayer = Math.floor(damageToPlayer * 1.5);
-      enemyCrit = true;
-    }
+  }, [resolveRound, team]);
 
-    // 5% de chance de errar (dano 0)
-    if (Math.random() < 0.05) {
-      damageToEnemy = 0;
-      playerMiss = true;
-    }
-    if (Math.random() < 0.05) {
-      damageToPlayer = 0;
-      enemyMiss = true;
-    }
+  const finishMatch = useCallback(
+    async (finalPlayerScore: number, finalEnemyScore: number) => {
+      setGameState('finished');
 
-    const nextEnemyHp = Math.max(0, enemyHp - damageToEnemy);
-    const nextPlayerHp = Math.max(0, playerHp - damageToPlayer);
+      if (finalPlayerScore > finalEnemyScore) {
+        const blockedIds = [
+          ...team.map((pokemon) => pokemon.id),
+          ...reserves.map((pokemon) => pokemon.id),
+          ...capturedIds,
+        ];
 
-    setEnemyHp(nextEnemyHp);
-    setPlayerHp(nextPlayerHp);
+        const rewardId = randomIdExcept(blockedIds);
+        let rewardPkm: Pokemon | null = null;
 
-    let roundLog = '';
-    if (playerMiss) {
-      roundLog += `${currentPlayer.nome} tentou atacar, mas errou! `;
-    } else {
-      roundLog += `${currentPlayer.nome} atacou causando ${damageToEnemy} de dano em ${currentEnemy.name}${playerCrit ? ' [CRÍTICO!]' : ''}. `;
-    }
+        try {
+          const reward = await getPokemonById(rewardId);
+          rewardPkm = reward;
 
-    if (enemyMiss) {
-      roundLog += `${currentEnemy.name} tentou contra-atacar, mas errou!`;
-    } else {
-      roundLog += `${currentEnemy.name} contra-atacou causando ${damageToPlayer} de dano${enemyCrit ? ' [CRÍTICO!]' : ''}.`;
-    }
+          if (capturedIds.includes(reward.id)) {
+            setRewardPokemon(null);
+            setBattleMessage('Voce venceu, mas nao havia novo pokemon disponivel para captura.');
+          } else {
+            await capturePokemon(reward.id);
+            setRewardPokemon(reward);
+            setBattleMessage(`Voce venceu! ${reward.nome} foi capturado e enviado para reserva.`);
+          }
+        } catch (err) {
+          Alert.alert('Erro ao capturar recompensa', getUserFriendlyMessage(err as any));
+        }
 
-    if (nextEnemyHp === 0 && nextPlayerHp === 0) {
-      // Ambos desmaiaram no mesmo turno
-      const hasNextPlayer = playerIndex + 1 < team.length;
-      const hasNextEnemy = enemyIndex + 1 < RIVAL_TEAM.length;
+        if (user?.userId) {
+          try {
+            const updatedProfile = await incrementWins(user.userId);
+            const newLevel = updatedProfile.level;
+            const oldLevel = 1 + Math.floor((updatedProfile.vitorias - 1) / 5);
+            if (newLevel > oldLevel) {
+              const levelUpMsg = rewardPkm
+                ? `Voce venceu! ${rewardPkm.nome} foi capturado e enviado para reserva.\n🎉 Você subiu para o nível ${newLevel}!`
+                : `Voce venceu! 🎉 Você subiu para o nível ${newLevel}!`;
+              setBattleMessage(levelUpMsg);
+            }
+          } catch (err) {
+            // Mantem fluxo da batalha mesmo sem update de stats.
+          }
+        }
+      } else if (finalEnemyScore > finalPlayerScore) {
+        setRewardPokemon(null);
+        setBattleMessage('Derrota na partida. Tente novamente.');
 
-      if (hasNextPlayer && hasNextEnemy) {
-        setPlayerIndex((prev) => prev + 1);
-        setPlayerHp(MAX_HP);
-        setEnemyIndex((prev) => prev + 1);
-        setEnemyHp(MAX_HP);
-        setMessage(`${roundLog}\nAmbos os Pokémon caíram! Os próximos combatentes entram em campo.`);
-      } else if (hasNextPlayer && !hasNextEnemy) {
-        setMatchFinished(true);
-        setMessage(`${roundLog}\nAmbos desmaiaram, mas você ainda tem Pokémon de pé! Vitória!`);
-        Alert.alert('Vitória!', 'Você derrotou o time rival na melhor de 6!');
-      } else if (!hasNextPlayer && hasNextEnemy) {
-        setMatchFinished(true);
-        setMessage(`${roundLog}\nAmbos desmaiaram e seu time titular foi derrotado. Derrota!`);
-        Alert.alert('Derrota', 'Seu time foi derrotado na melhor de 6.');
+        if (user?.userId) {
+          try {
+            await incrementLosses(user.userId);
+          } catch (err) {
+            // Mantem fluxo da batalha mesmo sem update de stats.
+          }
+        }
       } else {
-        setMatchFinished(true);
-        setMessage(`${roundLog}\nAmbos desmaiaram e ninguém tem mais combatentes. Empate técnico!`);
-        Alert.alert('Empate', 'A batalha terminou em empate técnico!');
+        setRewardPokemon(null);
+        setBattleMessage('Partida empatada.');
       }
-    } else if (nextEnemyHp === 0) {
-      // Inimigo desmaiou
-      const hasNextEnemy = enemyIndex + 1 < RIVAL_TEAM.length;
-      if (hasNextEnemy) {
-        setEnemyIndex((prev) => prev + 1);
-        setEnemyHp(MAX_HP);
-        // Jogador mantém a vida atual
-        setMessage(`${roundLog}\n${currentEnemy.name} desmaiou! O rival envia o próximo Pokémon.`);
-      } else {
-        setMatchFinished(true);
-        setMessage(`${roundLog}\n${currentEnemy.name} desmaiou! Todos os oponentes derrotados. Vitória!`);
-        Alert.alert('Vitória!', 'Você derrotou todos os Pokémons rivais na melhor de 6!');
-      }
-    } else if (nextPlayerHp === 0) {
-      // Jogador desmaiou
-      const hasNextPlayer = playerIndex + 1 < team.length;
-      if (hasNextPlayer) {
-        setPlayerIndex((prev) => prev + 1);
-        setPlayerHp(MAX_HP);
-        setMessage(`${roundLog}\n${currentPlayer.nome} desmaiou! Seu próximo Pokémon entra na arena.`);
-      } else {
-        setMatchFinished(true);
-        setMessage(`${roundLog}\n${currentPlayer.nome} desmaiou! Todo seu time foi derrotado. Derrota!`);
-        Alert.alert('Derrota', 'Seu time titular foi completamente derrotado.');
-      }
-    } else {
-      // Ambos sobreviveram
-      setMessage(roundLog);
-    }
-  }
 
-  const arenaStyle = useMemo(
-    () => [styles.arena, isWideLayout ? styles.arenaWide : styles.arenaCompact],
-    [isWideLayout]
+      await refreshTeam();
+    },
+    [capturePokemon, capturedIds, refreshTeam, reserves, team, user?.userId]
   );
 
-  const cardStyle = useMemo(
-    () => [styles.pokemonCard, isWideLayout ? styles.pokemonCardWide : null],
-    [isWideLayout]
-  );
+  const nextRound = useCallback(async () => {
+    const next = currentRound + 1;
+
+    if (
+      playerScore >= POINTS_TO_WIN ||
+      enemyScore >= POINTS_TO_WIN ||
+      next >= TOTAL_ROUNDS
+    ) {
+      await finishMatch(playerScore, enemyScore);
+      return;
+    }
+
+    setCurrentRound(next);
+    setGameState('playing');
+    resolveRound(next, playerTeamDetailed, enemyTeam);
+  }, [
+    currentRound,
+    enemyScore,
+    enemyTeam,
+    finishMatch,
+    playerScore,
+    playerTeamDetailed,
+    resolveRound,
+  ]);
+
+  useEffect(() => {
+    void refreshTeam();
+  }, [refreshTeam]);
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <View style={styles.content}>
         <AppNav />
 
-        <Text style={styles.title}>Área de Batalha</Text>
-
-        {isLoadingTeam ? (
-          <View style={styles.emptyContainer}>
+        {isLoading || isPreparingMatch ? (
+          <View style={styles.centerContent}>
             <ActivityIndicator size="large" color={Colors.btnPrimary} />
-            <Text style={styles.emptyText}>Carregando time...</Text>
+            <Text style={styles.mutedText}>Preparando batalha...</Text>
           </View>
-        ) : !team || team.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="shield-outline" size={80} color={Colors.gray[500]} />
-            <Text style={styles.emptyText}>Time titular vazio</Text>
-            <Text style={styles.emptySubtext}>
-              Você não possui nenhum Pokémon ativo no time titular para batalhar. Monte seu time na tela "Meu Time"!
+        ) : error ? (
+          <View style={styles.centerContent}>
+            <Text style={styles.errorText}>{getUserFriendlyMessage(error)}</Text>
+          </View>
+        ) : team.length < TOTAL_ROUNDS ? (
+          <View style={styles.centerContent}>
+            <Text style={styles.mutedText}>
+              Voce precisa de 5 pokemons no time para batalhar.
             </Text>
           </View>
-        ) : currentPlayer && currentEnemy ? (
-          <>
-            <View style={styles.teamStatusContainer}>
-              <View style={styles.teamStatusRow}>
-                <Text style={styles.statusLabel}>Rival:</Text>
-                <View style={styles.pokeballsRow}>
-                  {RIVAL_TEAM.map((p, idx) => {
-                    const isFainted = idx < enemyIndex;
-                    const isActive = idx === enemyIndex;
-                    return (
-                      <Ionicons
-                        key={p.id}
-                        name={isActive ? 'radio-button-on' : 'ellipse'}
-                        size={18}
-                        color={isFainted ? Colors.gray[500] : Colors.pokeballRed}
-                        style={isFainted && { opacity: 0.35 }}
-                      />
-                    );
-                  })}
-                </View>
-              </View>
+        ) : (
+          <ScrollView contentContainerStyle={styles.scrollContent}>
+            <Card style={styles.messageCard}>
+              <Text style={styles.sectionTitle}>Arena 5x5</Text>
+              <Text style={styles.scoreText}>Placar: {scoreLabel}</Text>
+              <Text style={styles.roundText}>
+                Round {Math.min(currentRound + 1, TOTAL_ROUNDS)}/{TOTAL_ROUNDS}
+              </Text>
+              <Text style={styles.messageText}>{battleMessage}</Text>
+            </Card>
 
-              <View style={styles.teamStatusRow}>
-                <Text style={styles.statusLabel}>Você:</Text>
-                <View style={styles.pokeballsRow}>
-                  {team.map((p, idx) => {
-                    const isFainted = idx < playerIndex;
-                    const isActive = idx === playerIndex;
-                    return (
-                      <Ionicons
-                        key={p.id}
-                        name={isActive ? 'radio-button-on' : 'ellipse'}
-                        size={18}
-                        color={isFainted ? Colors.gray[500] : Colors.game.win}
-                        style={isFainted && { opacity: 0.35 }}
-                      />
-                    );
-                  })}
-                </View>
-              </View>
-            </View>
+            {gameState === 'idle' ? (
+              <Card style={styles.idleCard}>
+                <Text style={styles.idleText}>
+                  Partida em 5 rounds. Ganha quem chegar em 3 pontos primeiro.
+                </Text>
+                <Button
+                  title="Iniciar partida"
+                  onPress={() => void startMatch()}
+                  disabled={!canStart}
+                  style={styles.fullButton}
+                />
+              </Card>
+            ) : (
+              <>
+                <View style={styles.versusContainer}>
+                  <Card style={styles.pokemonCard}>
+                    <Text style={styles.sideTitle}>Seu Pokemon</Text>
+                    {playerPokemon ? (
+                      <>
+                        <Image source={{ uri: playerPokemon.imagem }} style={styles.pokemonImage} />
+                        <Text style={styles.pokemonName}>{playerPokemon.nome}</Text>
+                        <Text style={styles.powerText}>
+                          {playerSelectedStat ? STAT_LABELS[playerSelectedStat] : '--'}: {playerStatValue}
+                        </Text>
+                      </>
+                    ) : (
+                      <Text style={styles.mutedText}>Sem pokemon para este round.</Text>
+                    )}
+                  </Card>
 
-            <View style={arenaStyle}>
-              <View style={cardStyle}>
-                <Text style={styles.pokemonName}>{currentEnemy.name}</Text>
-                <View style={styles.typesContainer}>
-                  <View
-                    style={[
-                      styles.typeBadge,
-                      {
-                        backgroundColor:
-                          pokemonTypeColors[currentEnemy.type.toLowerCase()] || '#A8A878',
-                        borderColor:
-                          pokemonTypeColors[currentEnemy.type.toLowerCase()] || '#A8A878',
-                      },
-                    ]}
-                  >
-                    <Text style={[styles.typeText, { color: '#FFF' }]}>{currentEnemy.type}</Text>
-                  </View>
-                </View>
-                <View style={styles.hpTrack}>
-                  <View style={[styles.hpFill, styles.enemyHp, { width: hpBarWidth(enemyHp) }]} />
-                </View>
-                <Text style={styles.hpText}>HP {enemyHp}/{MAX_HP}</Text>
-                <Image source={{ uri: currentEnemy.image }} style={styles.enemyImage} resizeMode="contain" />
-              </View>
+                  <Text style={styles.vsText}>VS</Text>
 
-              <View style={[cardStyle, styles.playerCard]}>
-                <Text style={styles.pokemonName}>{currentPlayer.nome}</Text>
-                <View style={styles.typesContainer}>
-                  {currentPlayer.tipos.map((type) => {
-                    const tColor = pokemonTypeColors[type.toLowerCase()] || '#A8A878';
-                    return (
-                      <View
-                        key={type}
-                        style={[
-                          styles.typeBadge,
-                          { backgroundColor: tColor, borderColor: tColor },
-                        ]}
-                      >
-                        <Text style={[styles.typeText, { color: '#FFF' }]}>{type}</Text>
-                      </View>
-                    );
-                  })}
+                  <Card style={styles.pokemonCard}>
+                    <Text style={styles.sideTitle}>Inimigo</Text>
+                    {enemyPokemon ? (
+                      <>
+                        <Image source={{ uri: enemyPokemon.imagem }} style={styles.pokemonImage} />
+                        <Text style={styles.pokemonName}>{enemyPokemon.nome}</Text>
+                        <View style={styles.typesContainer}>
+                          {enemyPokemon.tipos.map((type) => {
+                            const tColor = pokemonTypeColors[type.toLowerCase()] || '#A8A878';
+                            return (
+                              <View key={type} style={[styles.typeBadge, { backgroundColor: tColor }]}>
+                                <Text style={styles.typeText}>{type}</Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                        <Text style={styles.powerText}>
+                          {enemySelectedStat ? STAT_LABELS[enemySelectedStat] : '--'}: {enemyStatValue}
+                        </Text>
+                      </>
+                    ) : (
+                      <Text style={styles.mutedText}>Sem inimigo para este round.</Text>
+                    )}
+                  </Card>
                 </View>
-                <View style={styles.hpTrack}>
-                  <View style={[styles.hpFill, styles.playerHp, { width: hpBarWidth(playerHp) }]} />
+
+                <Card style={styles.logsCard}>
+                  <Text style={styles.sectionTitle}>Resumo do round</Text>
+                  <Text style={styles.logLine}>
+                    Seu {playerSelectedStat ? STAT_LABELS[playerSelectedStat] : '--'} ({playerStatValue}) x
+                    Inimigo {enemySelectedStat ? STAT_LABELS[enemySelectedStat] : '--'} ({enemyStatValue})
+                  </Text>
+                  <Text style={styles.logLine}>
+                    Resultado:{' '}
+                    {roundWinner === 'player'
+                      ? 'Voce venceu'
+                      : roundWinner === 'enemy'
+                        ? 'Inimigo venceu'
+                        : 'Empate'}
+                  </Text>
+                </Card>
+
+                {gameState === 'finished' && rewardPokemon ? (
+                  <Card style={styles.rewardCard}>
+                    <Text style={styles.sectionTitle}>Pokemon capturado</Text>
+                    <Image source={{ uri: rewardPokemon.imagem }} style={styles.rewardImage} />
+                    <Text style={styles.pokemonName}>{rewardPokemon.nome}</Text>
+                    <Text style={styles.mutedText}>Adicionado a sua reserva.</Text>
+                  </Card>
+                ) : null}
+
+                <View style={styles.actionsRow}>
+                  {gameState === 'round_resolved' ? (
+                    <Button
+                      title={currentRound >= TOTAL_ROUNDS - 1 ? 'Finalizar partida' : 'Proximo round'}
+                      onPress={() => void nextRound()}
+                      style={styles.actionButton}
+                    />
+                  ) : null}
+
+                  {gameState === 'finished' ? (
+                    <Button
+                      title="Nova partida"
+                      onPress={() => void startMatch()}
+                      style={styles.actionButton}
+                    />
+                  ) : null}
                 </View>
-                <Text style={styles.hpText}>HP {playerHp}/{MAX_HP}</Text>
-                <Image source={{ uri: currentPlayer.imagem }} style={styles.playerImage} resizeMode="contain" />
-              </View>
-            </View>
-
-            <View style={styles.feedbackBox}>
-              <Text style={styles.feedbackText}>{message}</Text>
-            </View>
-
-            <Button
-              title="Atacar"
-              onPress={attack}
-              disabled={matchFinished}
-              style={styles.actionButton}
-            />
-            <Button
-              title="Reiniciar batalha"
-              variant="surface"
-              onPress={resetBattle}
-              style={styles.actionButton}
-            />
-          </>
-        ) : null}
-      </ScrollView>
+              </>
+            )}
+          </ScrollView>
+        )}
+      </View>
     </SafeAreaView>
   );
 }
@@ -371,161 +437,169 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
   },
   content: {
+    flex: 1,
     paddingHorizontal: 20,
     paddingTop: 16,
-    paddingBottom: 20,
-    gap: 10,
   },
-  title: {
-    color: Colors.txtPrimary,
-    fontSize: 24,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
-  arena: {
-    gap: 10,
-    marginTop: 8,
-  },
-  arenaCompact: {
-    flexDirection: 'column',
-  },
-  arenaWide: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-  },
-  pokemonCard: {
-    backgroundColor: Colors.surfaceCard,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: Colors.borderSoft,
-    padding: 14,
-  },
-  pokemonCardWide: {
+  centerContent: {
     flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
   },
-  playerCard: {
-    marginTop: 6,
+  scrollContent: {
+    paddingBottom: 24,
+    gap: 14,
   },
-  pokemonName: {
-    color: Colors.txtPrimary,
-    fontSize: 18,
-    fontWeight: '700',
-    textTransform: 'capitalize',
-  },
-  typesContainer: {
-    flexDirection: 'row',
-    marginTop: 4,
-    gap: 4,
-  },
-  typeBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 4,
-    borderWidth: 1,
-  },
-  typeText: {
-    fontSize: 9,
-    textTransform: 'uppercase',
-    fontWeight: '700',
-  },
-  hpTrack: {
-    marginTop: 8,
-    width: '100%',
-    height: 12,
-    borderRadius: 999,
-    backgroundColor: Colors.surfaceMuted,
-    overflow: 'hidden',
-  },
-  hpFill: {
-    height: '100%',
-    borderRadius: 999,
-  },
-  enemyHp: {
-    backgroundColor: Colors.game.loss,
-  },
-  playerHp: {
-    backgroundColor: Colors.game.win,
-  },
-  hpText: {
-    marginTop: 4,
-    color: Colors.gray[500],
-    fontSize: 12,
-  },
-  enemyImage: {
-    width: 130,
-    height: 130,
-    alignSelf: 'flex-end',
-  },
-  playerImage: {
-    width: 140,
-    height: 140,
-    alignSelf: 'flex-start',
-  },
-  feedbackBox: {
-    marginTop: 12,
+  messageCard: {
     backgroundColor: Colors.surfaceCard,
     borderWidth: 1,
     borderColor: Colors.borderSoft,
     borderRadius: 14,
-    minHeight: 64,
-    justifyContent: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    padding: 14,
   },
-  feedbackText: {
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
     color: Colors.txtPrimary,
+  },
+  scoreText: {
+    marginTop: 6,
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.btnPrimary,
+  },
+  roundText: {
+    marginTop: 2,
+    fontSize: 13,
+    color: Colors.gray[500],
+  },
+  messageText: {
+    marginTop: 6,
+    fontSize: 14,
+    color: Colors.gray[800],
+  },
+  idleCard: {
+    backgroundColor: Colors.surfaceCard,
+    borderWidth: 1,
+    borderColor: Colors.borderSoft,
+    borderRadius: 14,
+    padding: 16,
+  },
+  idleText: {
+    color: Colors.gray[800],
     fontSize: 14,
     lineHeight: 20,
+    marginBottom: 12,
   },
-  actionButton: {
-    marginTop: 10,
-    height: 46,
+  fullButton: {
+    width: '100%',
+    marginTop: 0,
   },
-  teamStatusContainer: {
+  versusContainer: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  pokemonCard: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.surfaceCard,
+    borderWidth: 1,
+    borderColor: Colors.borderSoft,
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+  },
+  sideTitle: {
+    color: Colors.gray[500],
+    fontSize: 12,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  pokemonImage: {
+    width: 90,
+    height: 90,
+  },
+  pokemonName: {
+    marginTop: 6,
+    textTransform: 'capitalize',
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.txtPrimary,
+    textAlign: 'center',
+  },
+  powerText: {
+    marginTop: 4,
+    color: Colors.gray[500],
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  vsText: {
+    alignSelf: 'center',
+    fontSize: 22,
+    fontWeight: '700',
+    color: Colors.btnPrimary,
+  },
+  typesContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 4,
+    marginTop: 6,
+  },
+  typeBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  typeText: {
+    color: Colors.white,
+    fontSize: 10,
+    textTransform: 'uppercase',
+    fontWeight: '700',
+  },
+  logsCard: {
     backgroundColor: Colors.surfaceCard,
     borderWidth: 1,
     borderColor: Colors.borderSoft,
     borderRadius: 14,
     padding: 12,
-    gap: 8,
   },
-  teamStatusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  statusLabel: {
-    width: 50,
-    fontSize: 14,
-    fontWeight: '700',
-    color: Colors.txtPrimary,
-  },
-  pokeballsRow: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  emptyContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
+  rewardCard: {
     backgroundColor: Colors.surfaceCard,
-    borderRadius: 18,
     borderWidth: 1,
-    borderColor: Colors.borderSoft,
-    marginTop: 20,
-    paddingHorizontal: 20,
+    borderColor: Colors.game.win,
+    borderRadius: 14,
+    padding: 12,
+    alignItems: 'center',
   },
-  emptyText: {
-    color: Colors.txtPrimary,
-    fontSize: 18,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginTop: 16,
+  rewardImage: {
+    width: 120,
+    height: 120,
   },
-  emptySubtext: {
+  logLine: {
+    fontSize: 13,
+    color: Colors.gray[800],
+    marginTop: 6,
+  },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  actionButton: {
+    flex: 1,
+    marginTop: 0,
+  },
+  mutedText: {
+    marginTop: 10,
     color: Colors.gray[500],
-    fontSize: 14,
     textAlign: 'center',
-    marginTop: 8,
-    lineHeight: 20,
+  },
+  errorText: {
+    color: Colors.semantic.error.text,
+    textAlign: 'center',
   },
 });
