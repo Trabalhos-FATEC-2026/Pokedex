@@ -25,6 +25,7 @@ import Card from '@/components/card';
 import { getUserFriendlyMessage } from '@/utils/error-handler';
 import { pokemonTypeColors } from '@/utils/pokemonColors';
 import { Pokemon } from '@/@type/pokemon';
+import { removeCapturedPokemon as removeCapturedPokemonApi } from '@/integration/pokemons';
 
 export default function MyTeam() {
   const { width } = useWindowDimensions();
@@ -59,6 +60,7 @@ export default function MyTeam() {
   const [swapModal, setSwapModal] = useState<{ starterPokemon: Pokemon } | null>(null);
   const [swapSearch, setSwapSearch] = useState('');
   const [isSwapping, setIsSwapping] = useState(false);
+  const [isReleasing, setIsReleasing] = useState(false);
 
   useEffect(() => {
     if (user?.userId) {
@@ -67,24 +69,17 @@ export default function MyTeam() {
   }, [refreshTeam, user?.userId]);
 
   async function handleReleasePokemon(pokemonId: number, name: string) {
-    Alert.alert(
-      'Liberar Pokémon',
-      `Tem certeza que deseja liberar ${name}? Esta ação não pode ser desfeita.`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Liberar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await removeCapturedPokemon(pokemonId);
-            } catch (err) {
-              Alert.alert('Erro', getUserFriendlyMessage(err as any));
-            }
-          },
-        },
-      ]
-    );
+    if (!user?.userId || isReleasing) return;
+
+    setIsReleasing(true);
+    try {
+      await removeCapturedPokemonApi(user.userId, pokemonId);
+      await refreshTeam();
+    } catch (err) {
+      Alert.alert('Erro ao liberar', getUserFriendlyMessage(err as any));
+    } finally {
+      setIsReleasing(false);
+    }
   }
 
   async function handleSwapConfirm(reserveId: number) {
@@ -215,10 +210,11 @@ export default function MyTeam() {
                     </View>
                     <View style={styles.actionsColumn}>
                       <Button
-                        title="Liberar"
+                        title={isReleasing ? 'Liberando...' : 'Liberar'}
                         variant="danger"
                         onPress={() => void handleReleasePokemon(item.id, item.nome)}
                         style={styles.actionButton}
+                        disabled={isReleasing}
                       />
                     </View>
                   </Card>
